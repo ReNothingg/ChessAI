@@ -1,0 +1,92 @@
+import queue
+import tkinter as tk
+from tkinter import messagebox
+from typing import Dict, List, Optional
+
+import chess
+import chess.pgn
+import pygame
+from PIL import ImageTk
+
+from config import BOARD_IMG_HEIGHT, BOARD_IMG_WIDTH, DEFAULT_ENGINE_MOVETIME_MS, DEFAULT_ENGINE_MULTIPV, DEFAULT_ENGINE_SKILL
+from engine_handler import EngineHandler
+
+from .analysis import AnalysisMixin
+from .game import GameFlowMixin
+from .interaction import InteractionMixin
+from .ui import UIFlowMixin
+
+
+class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMixin):
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title("ChessAI")
+        self.root.minsize(BOARD_IMG_WIDTH + 20, BOARD_IMG_HEIGHT + 120)
+
+        self.piece_images: Dict[str, ImageTk.PhotoImage] = {}
+        self.current_game_node: Optional[chess.pgn.GameNode] = None
+        self.board_state: chess.Board = chess.Board()
+        self.board_orientation_white_pov: bool = True
+
+        self.is_animating = False
+        self.is_dragging = False
+        self.drag_from_square: Optional[int] = None
+        self.drag_image_id: Optional[int] = None
+        self.selected_square_for_move: Optional[int] = None
+
+        self.game_mode: str = "analysis"
+        self.user_color: Optional[bool] = None
+        self.evaluation_history: List[float] = []
+        self.move_nodes_in_listbox: List[chess.pgn.GameNode] = []
+
+        self.engine_skill_var = tk.IntVar(value=DEFAULT_ENGINE_SKILL)
+        self.engine_multipv_var = tk.IntVar(value=DEFAULT_ENGINE_MULTIPV)
+        self.engine_time_var = tk.IntVar(value=DEFAULT_ENGINE_MOVETIME_MS)
+
+        self.board_only_mode = False
+        self.hints_overlay_id = None
+
+        self.analysis_queue: queue.Queue = queue.Queue()
+        self.threat_move_obj: Optional[chess.Move] = None
+
+        self.analysis_in_flight = False
+        self.pending_analysis_fen: Optional[str] = None
+        self.full_analysis_in_progress = False
+
+        self.init_sound()
+
+        self.engine = EngineHandler(initial_skill_level=self.engine_skill_var.get())
+        if not self.engine.process:
+            messagebox.showwarning("Ошибка движка", "Stockfish не найден. Анализ будет недоступен.")
+
+        self.load_assets()
+        self.create_widgets()
+        self.bind_shortcuts()
+
+        if not self.engine.process:
+            self.analyze_game_button.config(state=tk.DISABLED)
+            self.threat_button.config(state=tk.DISABLED)
+            self.skill_scale.state(["disabled"])
+            self.multipv_spinbox.state(["disabled"])
+            self.time_spinbox.state(["disabled"])
+
+        self.board_canvas.bind("<ButtonPress-1>", self.on_mouse_down)
+        self.board_canvas.bind("<B1-Motion>", self.on_mouse_drag)
+        self.board_canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
+        self.board_canvas.bind("<Motion>", self.on_mouse_move)
+        self.board_canvas.bind("<Leave>", lambda e: self.board_canvas.configure(cursor="arrow"))
+
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.update_board_display()
+        self.update_info_panel()
+        self.process_analysis_queue()
+        self.prompt_color_and_start()
+
+    def on_closing(self) -> None:
+        self.is_animating = False
+        if self.engine and self.engine.process:
+            self.engine.quit_engine()
+        if getattr(self, "sound_enabled", False) and pygame.mixer.get_init():
+            pygame.mixer.quit()
+        self.root.destroy()
