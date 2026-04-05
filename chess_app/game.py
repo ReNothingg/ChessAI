@@ -14,6 +14,7 @@ import requests
 class GameFlowMixin:
     LICHESS_GAME_ID_RE = re.compile(r"^[A-Za-z0-9]{8,}$")
     LICHESS_TIMEOUT_SEC = 10
+    PGN_ENCODINGS = ("utf-8-sig", "utf-8", "cp1251", "latin-1")
 
     def prompt_color_and_start(self) -> None:
         win = Toplevel(self.root)
@@ -42,7 +43,7 @@ class GameFlowMixin:
         color = random.choice([chess.WHITE, chess.BLACK]) if value == "random" else (chess.WHITE if value == "white" else chess.BLACK)
         self.user_color = color
         game = chess.pgn.Game()
-        game.headers["Event"] = "Игра против движка"
+        game.headers["Event"] = "РРіСЂР° РїСЂРѕС‚РёРІ РґРІРёР¶РєР°"
         game.headers["White"] = "Человек" if color == chess.WHITE else "Stockfish"
         game.headers["Black"] = "Stockfish" if color == chess.BLACK else "Человек"
         self.reset_to_new_game(game, preserve_orientation=True)
@@ -50,7 +51,8 @@ class GameFlowMixin:
         self.update_board_display()
         self.game_mode = "play_engine"
         if self.board_state.turn != self.user_color:
-            self.root.after(500, self.make_engine_move)
+            expected_fen = self.board_state.fen()
+            self.root.after(500, lambda fen=expected_fen: self.make_engine_move(expected_fen=fen))
 
     def update_info_panel(self) -> None:
         self.clear_evaluation_display()
@@ -147,8 +149,7 @@ class GameFlowMixin:
             return
 
         try:
-            with open(filepath, "r", encoding="utf-8-sig") as pgn_file:
-                pgn_text = pgn_file.read()
+            pgn_text = self._read_text_file_with_fallbacks(filepath)
 
             pgn_io = io.StringIO(pgn_text)
             games: List[Tuple[dict, int]] = []
@@ -170,6 +171,21 @@ class GameFlowMixin:
 
         except Exception as exc:
             messagebox.showerror("Ошибка загрузки PGN", f"Произошла ошибка: {exc}")
+
+    def _read_text_file_with_fallbacks(self, filepath: str) -> str:
+        last_error: Optional[Exception] = None
+        for encoding in self.PGN_ENCODINGS:
+            try:
+                with open(filepath, "r", encoding=encoding) as pgn_file:
+                    return pgn_file.read()
+            except UnicodeDecodeError as exc:
+                last_error = exc
+
+        if last_error:
+            raise last_error
+
+        with open(filepath, "r", encoding="utf-8") as pgn_file:
+            return pgn_file.read()
 
     def show_pgn_selection_window(self, pgn_text: str, games: List[Tuple[dict, int]]) -> None:
         win = Toplevel(self.root)
@@ -222,8 +238,15 @@ class GameFlowMixin:
             messagebox.showerror("Ошибка FEN", "Неверная строка FEN.")
 
     def _extract_lichess_game_id(self, raw_url: str) -> Optional[str]:
+        candidate = raw_url.strip()
+        if self.LICHESS_GAME_ID_RE.fullmatch(candidate):
+            return candidate
+
+        if "://" not in candidate and candidate.startswith(("lichess.org/", "www.lichess.org/")):
+            candidate = f"https://{candidate}"
+
         try:
-            parsed = urlparse(raw_url.strip())
+            parsed = urlparse(candidate)
         except Exception:
             return None
 
@@ -301,6 +324,7 @@ class GameFlowMixin:
         self.drag_from_square = None
         self.drag_image_id = None
         self.evaluation_history = []
+        self.threat_move_obj = None
         self.pending_analysis_fen = None
         self.analysis_in_flight = False
         self.update_board_display()
@@ -315,7 +339,7 @@ class GameFlowMixin:
         status_text, color = "", "blue"
         if self.board_state.is_checkmate():
             winner = "Белые" if self.board_state.turn == chess.BLACK else "Черные"
-            status_text, color = f"ШАХ И МАТ! {winner} победили.", "red"
+            status_text, color = f"РЁРђРҐ Р РњРђРў! {winner} РїРѕР±РµРґРёР»Рё.", "red"
         elif self.board_state.is_stalemate():
             status_text = "ПАТ! Ничья."
         elif self.board_state.is_insufficient_material():

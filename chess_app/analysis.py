@@ -6,6 +6,13 @@ from typing import Any, Optional
 
 import chess
 
+from .analysis_utils import (
+    classify_eval_loss,
+    mate_to_white_perspective,
+    merge_analysis_comment,
+    score_to_white_perspective,
+)
+
 
 class AnalysisMixin:
     def start_full_game_analysis(self) -> None:
@@ -43,6 +50,7 @@ class AnalysisMixin:
             board = game.board()
             for idx, node in enumerate(nodes):
                 fen_before = board.fen()
+                mover_color = board.turn
                 if self.engine and self.engine.process:
                     analysis_before, _ = self.engine.analyze_position(fen_before, movetime_ms=self.engine_time_var.get())
                 else:
@@ -51,6 +59,7 @@ class AnalysisMixin:
                 if analysis_before and analysis_before[0].get("move_uci"):
                     score_obj = analysis_before[0]
                     score_cp = score_obj.get("score_cp")
+                    score_mate = score_obj.get("score_mate")
 
                     best_move_san = "N/A"
                     try:
@@ -63,8 +72,8 @@ class AnalysisMixin:
                     board.push(node.move)
 
                     if score_cp is not None:
-                        current_player_score = score_cp if board.turn != chess.WHITE else -score_cp
-                        self.evaluation_history.append(current_player_score)
+                        white_score = score_to_white_perspective(score_cp, mover_color)
+                        self.evaluation_history.append(white_score)
 
                         fen_after = board.fen()
                         if self.engine and self.engine.process:
@@ -76,21 +85,15 @@ class AnalysisMixin:
                             analysis_after = []
 
                         if analysis_after and analysis_after[0].get("score_cp") is not None:
-                            score_after_cp = analysis_after[0]["score_cp"]
-                            next_player_score = score_after_cp if board.turn == chess.WHITE else -score_after_cp
-                            eval_loss = current_player_score - (-next_player_score)
+                            eval_loss = score_cp + analysis_after[0]["score_cp"]
+                            _, verdict = classify_eval_loss(eval_loss)
 
-                            comment = f"[%eval {current_player_score / 100.0:.2f}] Лучший ход был {best_move_san}."
-                            if eval_loss > 250:
-                                comment += " (Зевок ??)"
-                            elif eval_loss > 120:
-                                comment += " (Ошибка ?)"
-                            elif eval_loss > 60:
-                                comment += " (Неточность ?!)"
-                            node.comment = comment
-                    else:
-                        mate_score = 10000 if score_obj.get("score_mate", 0) > 0 else -10000
-                        self.evaluation_history.append(mate_score if board.turn != chess.WHITE else -mate_score)
+                            comment = f"[%eval {white_score / 100.0:.2f}] Best move was {best_move_san}."
+                            if verdict:
+                                comment += f" ({verdict})"
+                            node.comment = merge_analysis_comment(node.comment, comment)
+                    elif score_mate is not None:
+                        self.evaluation_history.append(mate_to_white_perspective(score_mate, mover_color))
                 else:
                     board.push(node.move)
 
@@ -119,18 +122,25 @@ class AnalysisMixin:
         if self.is_animating or self.board_state.is_game_over():
             return
 
+        expected_fen = self.board_state.fen()
+
         def get_threat_in_thread() -> None:
             if not self.engine or not self.engine.process:
                 return
-            threat_uci = self.engine.get_threat(self.board_state.fen())
+            threat_uci = self.engine.get_threat(expected_fen)
             if not threat_uci:
                 return
-            try:
-                move = self.board_state.parse_uci(threat_uci)
-                self.threat_move_obj = move
-                self.root.after(0, self._draw_move_arrows)
-            except Exception:
-                self.threat_move_obj = None
+
+            def apply_threat() -> None:
+                if self.board_state.fen() != expected_fen or self.is_animating:
+                    return
+                try:
+                    self.threat_move_obj = self.board_state.parse_uci(threat_uci)
+                    self._draw_move_arrows()
+                except Exception:
+                    self.threat_move_obj = None
+
+            self.root.after(0, apply_threat)
 
         threading.Thread(target=get_threat_in_thread, daemon=True).start()
 
@@ -197,7 +207,7 @@ class AnalysisMixin:
                         if line.get("score_mate") is not None:
                             eval_text = f"Мат в {abs(line['score_mate'])}"
                         elif line.get("score_cp") is not None:
-                            cp_val = line["score_cp"] if self.board_state.turn == chess.WHITE else -line["score_cp"]
+                            cp_val = score_to_white_perspective(line["score_cp"], self.board_state.turn)
                             eval_text = f"{cp_val / 100.0:+.2f}"
 
                         self.eval_tree.insert("", "end", values=(line["pv"], move_san, eval_text))

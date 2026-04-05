@@ -18,7 +18,10 @@ class InteractionMixin:
             self.check_puzzle_move(move)
             return
 
-        captured = self.board_state.is_capture(move) or self.board_state.is_en_passant(move)
+        self._apply_move(move)
+
+    def _apply_move(self, move: chess.Move) -> None:
+        captured = self._is_capture_move(move)
         animated_piece_symbol = self.get_animated_piece_symbol(move)
 
         if self.current_game_node is None:
@@ -35,23 +38,46 @@ class InteractionMixin:
             animated_piece_symbol=animated_piece_symbol,
         )
 
-        if self.game_mode == "play_engine" and not self.board_state.is_game_over():
-            self.root.after(500, self.make_engine_move)
+        if self._is_engine_turn():
+            expected_fen = self.board_state.fen()
+            self.root.after(500, lambda fen=expected_fen: self.make_engine_move(expected_fen=fen))
 
-    def make_engine_move(self) -> None:
-        if self.is_animating or self.board_state.is_game_over() or not self.engine or not self.engine.process:
+    def _is_capture_move(self, move: chess.Move) -> bool:
+        return self.board_state.is_capture(move) or self.board_state.is_en_passant(move)
+
+    def _is_engine_turn(self, expected_fen: Optional[str] = None) -> bool:
+        if self.game_mode != "play_engine" or self.user_color is None:
+            return False
+        if self.board_state.is_game_over() or self.board_state.turn == self.user_color:
+            return False
+        if expected_fen is not None and self.board_state.fen() != expected_fen:
+            return False
+        return True
+
+    def make_engine_move(self, expected_fen: Optional[str] = None) -> None:
+        if self.is_animating or not self.engine or not self.engine.process:
+            return
+        if not self._is_engine_turn(expected_fen):
             return
 
+        fen_to_analyze = self.board_state.fen()
+
         def find_and_make_move() -> None:
-            _, best_move_uci = self.engine.analyze_position(self.board_state.fen(), movetime_ms=self.engine_time_var.get())
+            _, best_move_uci = self.engine.analyze_position(fen_to_analyze, movetime_ms=self.engine_time_var.get())
             if not best_move_uci:
                 return
             try:
                 move = chess.Move.from_uci(best_move_uci)
             except Exception:
                 return
-            if self.board_state.is_legal(move):
-                self.root.after(0, lambda: self.make_user_move(move))
+
+            def apply_engine_move() -> None:
+                if not self._is_engine_turn(fen_to_analyze):
+                    return
+                if self.board_state.is_legal(move):
+                    self._apply_move(move)
+
+            self.root.after(0, apply_engine_move)
 
         threading.Thread(target=find_and_make_move, daemon=True).start()
 
@@ -60,19 +86,24 @@ class InteractionMixin:
             messagebox.showwarning("Движок недоступен", "Проверка задач недоступна без Stockfish.")
             return
 
+        expected_fen = self.board_state.fen()
+
         def check_in_thread() -> None:
-            _, best_move_uci = self.engine.analyze_position(self.board_state.fen(), movetime_ms=self.engine_time_var.get())
+            _, best_move_uci = self.engine.analyze_position(expected_fen, movetime_ms=self.engine_time_var.get())
             try:
                 best_move = chess.Move.from_uci(best_move_uci)
             except Exception:
                 best_move = None
 
             def show_result() -> None:
-                if best_move and user_move == best_move:
+                if self.game_mode != "puzzle" or self.board_state.fen() != expected_fen:
+                    return
+
+                if best_move and user_move == best_move and self.board_state.is_legal(user_move):
                     messagebox.showinfo("Правильно!", f"Отличный ход! {self.board_state.san(user_move)}")
-                    self.make_user_move(user_move)
+                    self._apply_move(user_move)
                 else:
-                    best_move_san = self.board_state.san(best_move) if best_move else "N/A"
+                    best_move_san = self.board_state.san(best_move) if best_move and self.board_state.is_legal(best_move) else "N/A"
                     messagebox.showwarning("Неверно", f"Неправильный ход. Лучшим ходом был {best_move_san}.")
 
             self.root.after(0, show_result)
@@ -184,7 +215,7 @@ class InteractionMixin:
         if self.current_game_node and self.current_game_node.variations:
             target_node = self.current_game_node.variation(0)
             move = target_node.move
-            captured = self.board_state.is_capture(move)
+            captured = self._is_capture_move(move)
             animated_piece_symbol = self.get_animated_piece_symbol(move)
             self._set_active_node(
                 target_node,
@@ -205,6 +236,23 @@ class InteractionMixin:
                 move_to_animate=move_to_undo,
                 animated_piece_symbol=animated_piece_symbol,
             )
+
+    def first_move_action(self) -> None:
+        if self.current_game_node:
+            root_node = self.current_game_node.game()
+            if root_node != self.current_game_node:
+                self._set_active_node(root_node)
+
+    def last_move_action(self) -> None:
+        if not self.current_game_node:
+            return
+
+        target_node = self.current_game_node
+        while target_node.variations:
+            target_node = target_node.variation(0)
+
+        if target_node != self.current_game_node:
+            self._set_active_node(target_node)
 
     def on_move_select_from_listbox(self, event: tk.Event) -> None:
         if self.is_animating or not event.widget.curselection():

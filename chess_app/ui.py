@@ -21,6 +21,7 @@ from config import (
     SOUND_DIR,
     SQUARE_SIZE,
 )
+from .analysis_utils import mate_to_white_perspective, score_to_white_perspective
 from .helpers import make_placeholder_piece
 
 
@@ -111,10 +112,14 @@ class UIFlowMixin:
         game_menu.add_command(label="Новая игра с движком", command=self.start_new_game_vs_engine)
         game_menu.add_command(label="Режим: Только доска (Space)", command=self.toggle_board_only)
 
+        self.first_move_button = ttk.Button(pgn_controls_frame, text="|<", command=self.first_move_action, state=tk.DISABLED)
+        self.first_move_button.pack(side=tk.LEFT, padx=2)
         self.prev_move_button = ttk.Button(pgn_controls_frame, text="<", command=self.prev_move_action, state=tk.DISABLED)
         self.prev_move_button.pack(side=tk.LEFT, padx=2)
         self.next_move_button = ttk.Button(pgn_controls_frame, text=">", command=self.next_move_action, state=tk.DISABLED)
         self.next_move_button.pack(side=tk.LEFT, padx=2)
+        self.last_move_button = ttk.Button(pgn_controls_frame, text=">|", command=self.last_move_action, state=tk.DISABLED)
+        self.last_move_button.pack(side=tk.LEFT, padx=2)
         self.flip_board_button = ttk.Button(pgn_controls_frame, text="Перевернуть (F)", command=self.flip_board)
         self.flip_board_button.pack(side=tk.LEFT, padx=6)
         self.copy_fen_button = ttk.Button(pgn_controls_frame, text="Копировать FEN", command=self.export_fen_to_clipboard)
@@ -183,11 +188,11 @@ class UIFlowMixin:
 
         multipv_frame = ttk.Frame(engine_settings_frame)
         multipv_frame.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(multipv_frame, text="Количество строк (1-5):").pack(side=tk.LEFT)
+        ttk.Label(multipv_frame, text="Количество строк (1-10):").pack(side=tk.LEFT)
         self.multipv_spinbox = ttk.Spinbox(
             multipv_frame,
             from_=1,
-            to=5,
+            to=10,
             textvariable=self.engine_multipv_var,
             width=3,
             command=self.update_engine_multipv,
@@ -238,8 +243,10 @@ class UIFlowMixin:
 
     def bind_shortcuts(self) -> None:
         self.root.bind("<space>", lambda e: self.toggle_board_only())
+        self.root.bind("<Home>", lambda e: self.first_move_action())
         self.root.bind("<Left>", lambda e: self.prev_move_action())
         self.root.bind("<Right>", lambda e: self.next_move_action())
+        self.root.bind("<End>", lambda e: self.last_move_action())
         self.root.bind("f", lambda e: self.flip_board())
         self.root.bind("F", lambda e: self.flip_board())
         self.root.bind("a", lambda e: self.request_analysis_current_pos())
@@ -302,12 +309,12 @@ class UIFlowMixin:
         best_moves = self.get_best_moves_from_treeview()
         if best_moves:
             try:
-                self.draw_arrow(best_moves[0].from_square, best_moves[0].to_square, color="#228B22", width=4, tag="best_move_arrow")
+                self.draw_arrow(best_moves[0].from_square, best_moves[0].to_square, color="#228B22", width=4, tag="engine_arrow")
             except Exception:
                 pass
-            for idx, move in enumerate(best_moves[1:], start=1):
+            for move in best_moves[1:]:
                 try:
-                    self.draw_arrow(move.from_square, move.to_square, color="#FFA500", width=2, tag=f"alt_move_arrow_{idx}")
+                    self.draw_arrow(move.from_square, move.to_square, color="#FFA500", width=2, tag="engine_arrow")
                 except Exception:
                     pass
 
@@ -386,11 +393,17 @@ class UIFlowMixin:
 
     def update_navigation_buttons(self) -> None:
         if self.current_game_node:
-            self.prev_move_button.config(state=tk.NORMAL if self.current_game_node.parent else tk.DISABLED)
-            self.next_move_button.config(state=tk.NORMAL if self.current_game_node.variations else tk.DISABLED)
+            can_go_back = tk.NORMAL if self.current_game_node.parent else tk.DISABLED
+            can_go_forward = tk.NORMAL if self.current_game_node.variations else tk.DISABLED
+            self.first_move_button.config(state=can_go_back)
+            self.prev_move_button.config(state=can_go_back)
+            self.next_move_button.config(state=can_go_forward)
+            self.last_move_button.config(state=can_go_forward)
         else:
+            self.first_move_button.config(state=tk.DISABLED)
             self.prev_move_button.config(state=tk.DISABLED)
             self.next_move_button.config(state=tk.DISABLED)
+            self.last_move_button.config(state=tk.DISABLED)
 
     def flip_board(self) -> None:
         if self.is_animating:
@@ -435,7 +448,7 @@ class UIFlowMixin:
     def clear_evaluation_display(self) -> None:
         for item in self.eval_tree.get_children():
             self.eval_tree.delete(item)
-        self.board_canvas.delete("best_move_arrow", "alt_move_arrow")
+        self.board_canvas.delete("engine_arrow")
 
     def update_eval_bar(self, score_cp: Optional[int], score_mate: Optional[int], max_eval_cp: int = 1000) -> None:
         bar_width = self.eval_bar_canvas.winfo_width()
@@ -447,12 +460,14 @@ class UIFlowMixin:
             normalized_score = 0.0 if self.board_state.turn == chess.WHITE else 1.0
             text = "МАТ"
         elif score_mate is not None:
-            normalized_score = 1.0 if score_mate > 0 else 0.0
+            white_mate_score = mate_to_white_perspective(score_mate, self.board_state.turn)
+            normalized_score = 1.0 if white_mate_score > 0 else 0.0
             text = f"M{abs(score_mate)}"
         elif score_cp is not None:
-            clamped_score = max(-max_eval_cp, min(max_eval_cp, score_cp))
+            white_score = score_to_white_perspective(score_cp, self.board_state.turn)
+            clamped_score = max(-max_eval_cp, min(max_eval_cp, white_score))
             normalized_score = (clamped_score / max_eval_cp) * 0.5 + 0.5
-            text = f"{score_cp / 100.0:+.2f}"
+            text = f"{white_score / 100.0:+.2f}"
 
         white_width = bar_width * normalized_score
         self.eval_bar_canvas.coords(self.eval_line, 0, 0, white_width, EVAL_BAR_HEIGHT)
@@ -503,6 +518,7 @@ class UIFlowMixin:
             [
                 "Горячие клавиши:",
                 "Space — режим только доски (toggle)",
+                "Home / End — в начало / в конец партии",
                 "← / → — перемотка ходов",
                 "F — перевернуть доску",
                 "A — анализ текущей позиции",
