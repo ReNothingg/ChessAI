@@ -52,7 +52,7 @@ class AnalysisMixin:
                 fen_before = board.fen()
                 mover_color = board.turn
                 if self.engine and self.engine.process:
-                    analysis_before, _ = self.engine.analyze_position(fen_before, movetime_ms=self.engine_time_var.get())
+                    analysis_before, _ = self.engine.analyze_position(fen_before, movetime_ms=self.get_engine_movetime_ms())
                 else:
                     analysis_before = []
 
@@ -79,7 +79,7 @@ class AnalysisMixin:
                         if self.engine and self.engine.process:
                             analysis_after, _ = self.engine.analyze_position(
                                 fen_after,
-                                movetime_ms=max(200, self.engine_time_var.get() // 4),
+                                movetime_ms=max(200, self.get_engine_movetime_ms() // 4),
                             )
                         else:
                             analysis_after = []
@@ -161,7 +161,7 @@ class AnalysisMixin:
     def _run_engine_analysis(self, fen_string: str) -> None:
         analysis_lines = []
         try:
-            analysis_lines, _ = self.engine.analyze_position(fen_string, movetime_ms=self.engine_time_var.get())
+            analysis_lines, _ = self.engine.analyze_position(fen_string, movetime_ms=self.get_engine_movetime_ms())
         except Exception as exc:
             print("Engine analysis error:", exc)
         finally:
@@ -225,9 +225,9 @@ class AnalysisMixin:
 
     def update_engine_skill(self, event: Optional[Any] = None) -> None:
         if self.engine and self.engine.process:
-            self.engine.set_skill_level(self.engine_skill_var.get())
+            self.engine.set_skill_level(self.get_engine_skill_level())
 
     def update_engine_multipv(self, event: Optional[Any] = None) -> None:
         if self.engine and self.engine.process:
-            self.engine.set_multi_pv(self.engine_multipv_var.get())
+            self.engine.set_multi_pv(self.get_engine_multipv())
             self.request_analysis_current_pos()

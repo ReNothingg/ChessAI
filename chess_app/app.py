@@ -14,6 +14,7 @@ from engine_handler import EngineHandler
 from .analysis import AnalysisMixin
 from .game import GameFlowMixin
 from .interaction import InteractionMixin
+from .settings_utils import parse_bounded_int
 from .ui import UIFlowMixin
 
 
@@ -55,7 +56,7 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
 
         self.init_sound()
 
-        self.engine = EngineHandler(initial_skill_level=self.engine_skill_var.get())
+        self.engine = EngineHandler(initial_skill_level=self.get_engine_skill_level())
         if not self.engine.process:
             messagebox.showwarning("Ошибка движка", "Stockfish не найден. Анализ будет недоступен.")
 
@@ -82,6 +83,55 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
         self.update_info_panel()
         self.process_analysis_queue()
         self.prompt_color_and_start()
+
+    def _read_bounded_int_setting(
+        self,
+        variable: tk.IntVar,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int,
+        widget: Optional[tk.Entry] = None,
+    ) -> int:
+        try:
+            raw_value = widget.get() if widget is not None else variable.get()
+        except tk.TclError:
+            raw_value = default
+
+        value = parse_bounded_int(raw_value, default=default, minimum=minimum, maximum=maximum)
+        variable.set(value)
+
+        if widget is not None:
+            widget.delete(0, tk.END)
+            widget.insert(0, str(value))
+
+        return value
+
+    def get_engine_skill_level(self) -> int:
+        return self._read_bounded_int_setting(
+            self.engine_skill_var,
+            default=DEFAULT_ENGINE_SKILL,
+            minimum=0,
+            maximum=20,
+        )
+
+    def get_engine_multipv(self) -> int:
+        return self._read_bounded_int_setting(
+            self.engine_multipv_var,
+            default=DEFAULT_ENGINE_MULTIPV,
+            minimum=1,
+            maximum=10,
+            widget=getattr(self, "multipv_spinbox", None),
+        )
+
+    def get_engine_movetime_ms(self) -> int:
+        return self._read_bounded_int_setting(
+            self.engine_time_var,
+            default=DEFAULT_ENGINE_MOVETIME_MS,
+            minimum=200,
+            maximum=10000,
+            widget=getattr(self, "time_spinbox", None),
+        )
 
     def on_closing(self) -> None:
         self.is_animating = False

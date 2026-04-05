@@ -137,7 +137,7 @@ class EngineHandler:
         if not self.process:
             return
         with self._command_lock:
-            num_pvs = max(1, min(5, int(num_pvs)))
+            num_pvs = max(1, min(10, int(num_pvs)))
             self._send_command(f"setoption name MultiPV value {num_pvs}")
 
     def set_position_from_fen(self, fen_string: str) -> None:

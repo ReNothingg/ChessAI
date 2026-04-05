@@ -63,7 +63,7 @@ class InteractionMixin:
         fen_to_analyze = self.board_state.fen()
 
         def find_and_make_move() -> None:
-            _, best_move_uci = self.engine.analyze_position(fen_to_analyze, movetime_ms=self.engine_time_var.get())
+            _, best_move_uci = self.engine.analyze_position(fen_to_analyze, movetime_ms=self.get_engine_movetime_ms())
             if not best_move_uci:
                 return
             try:
@@ -89,7 +89,7 @@ class InteractionMixin:
         expected_fen = self.board_state.fen()
 
         def check_in_thread() -> None:
-            _, best_move_uci = self.engine.analyze_position(expected_fen, movetime_ms=self.engine_time_var.get())
+            _, best_move_uci = self.engine.analyze_position(expected_fen, movetime_ms=self.get_engine_movetime_ms())
             try:
                 best_move = chess.Move.from_uci(best_move_uci)
             except Exception:
