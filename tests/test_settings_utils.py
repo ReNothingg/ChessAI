@@ -1,6 +1,6 @@
 import unittest
 
-from chess_app.settings_utils import parse_bounded_int
+from app.settings_utils import parse_bounded_int
 
 
 class SettingsUtilsTests(unittest.TestCase):

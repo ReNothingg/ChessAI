@@ -2,7 +2,7 @@ import unittest
 
 import chess
 
-from chess_app.analysis_utils import (
+from app.analysis_utils import (
     AUTO_ANALYSIS_PREFIX,
     classify_eval_loss,
     mate_to_white_perspective,

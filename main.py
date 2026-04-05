@@ -2,8 +2,8 @@ import tkinter as tk
 from tkinter import messagebox
 
 from config import ASSETS_DIR
-from chess_app.app import ChessAnalyzerApp
-from chess_app.helpers import ensure_assets_exist
+from app.app import ChessAnalyzerApp
+from app.helpers import ensure_assets_exist
 
 
 if __name__ == "__main__":

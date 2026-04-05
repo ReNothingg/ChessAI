@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chess_app.game import GameFlowMixin
+from app.game import GameFlowMixin
 
 
 class StubGameFlow(GameFlowMixin):
