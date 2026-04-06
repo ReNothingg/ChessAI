@@ -8,12 +8,19 @@ import chess.pgn
 import pygame
 from PIL import ImageTk
 
-from config import BOARD_IMG_HEIGHT, BOARD_IMG_WIDTH, DEFAULT_ENGINE_MOVETIME_MS, DEFAULT_ENGINE_MULTIPV, DEFAULT_ENGINE_SKILL
+from config import (
+    BOARD_IMG_HEIGHT,
+    BOARD_IMG_WIDTH,
+    DEFAULT_ENGINE_MOVETIME_MS,
+    DEFAULT_ENGINE_MULTIPV,
+    DEFAULT_ENGINE_SKILL,
+)
 from engine_handler import EngineHandler
 
 from .analysis import AnalysisMixin
 from .game import GameFlowMixin
 from .interaction import InteractionMixin
+from .reporting import GameReport, TrainingPuzzle
 from .settings_utils import parse_bounded_int
 from .ui import UIFlowMixin
 
@@ -49,6 +56,19 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
 
         self.analysis_queue: queue.Queue = queue.Queue()
         self.threat_move_obj: Optional[chess.Move] = None
+        self.latest_analysis_lines: List[dict] = []
+        self.latest_analysis_fen: Optional[str] = None
+        self.current_coach_hint: str = ""
+        self.latest_game_report: Optional[GameReport] = None
+
+        self.training_puzzles: List[TrainingPuzzle] = []
+        self.training_session_name: str = ""
+        self.training_index: int = -1
+        self.training_score: int = 0
+        self.training_restore_state: Optional[dict] = None
+
+        self.variation_tree_nodes: Dict[str, chess.pgn.GameNode] = {}
+        self.coach_mode_var = tk.BooleanVar(value=True)
 
         self.analysis_in_flight = False
         self.pending_analysis_fen: Optional[str] = None

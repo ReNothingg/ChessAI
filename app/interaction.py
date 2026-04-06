@@ -1,4 +1,3 @@
-import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 from typing import List, Optional
@@ -29,7 +28,15 @@ class InteractionMixin:
             game.setup(self.board_state)
             self.current_game_node = game
 
-        new_node = self.current_game_node.add_variation(move)
+        self.invalidate_cached_report()
+        new_node = None
+        for variation in self.current_game_node.variations:
+            if variation.move == move:
+                new_node = variation
+                break
+        if new_node is None:
+            new_node = self.current_game_node.add_variation(move)
+
         self._set_active_node(
             new_node,
             is_forward_move=True,
@@ -79,6 +86,8 @@ class InteractionMixin:
 
             self.root.after(0, apply_engine_move)
 
+        import threading
+
         threading.Thread(target=find_and_make_move, daemon=True).start()
 
     def check_puzzle_move(self, user_move: chess.Move) -> None:
@@ -99,14 +108,21 @@ class InteractionMixin:
                 if self.game_mode != "puzzle" or self.board_state.fen() != expected_fen:
                     return
 
+                best_move_san = self.board_state.san(best_move) if best_move and self.board_state.is_legal(best_move) else "N/A"
                 if best_move and user_move == best_move and self.board_state.is_legal(user_move):
                     messagebox.showinfo("Правильно!", f"Отличный ход! {self.board_state.san(user_move)}")
-                    self._apply_move(user_move)
+                    self.complete_training_attempt(True)
                 else:
-                    best_move_san = self.board_state.san(best_move) if best_move and self.board_state.is_legal(best_move) else "N/A"
-                    messagebox.showwarning("Неверно", f"Неправильный ход. Лучшим ходом был {best_move_san}.")
+                    hint_text = self.get_training_hint_text()
+                    message = f"Неправильный ход. Лучшим ходом был {best_move_san}."
+                    if hint_text:
+                        message += f"\n\nПодсказка тренера: {hint_text}"
+                    messagebox.showwarning("Неверно", message)
+                    self.complete_training_attempt(False)
 
             self.root.after(0, show_result)
+
+        import threading
 
         threading.Thread(target=check_in_thread, daemon=True).start()
 
@@ -264,6 +280,126 @@ class InteractionMixin:
             if target_node != self.current_game_node:
                 self._set_active_node(target_node)
 
+    def populate_variation_tree(self) -> None:
+        if not hasattr(self, "variation_tree"):
+            return
+
+        for item in self.variation_tree.get_children():
+            self.variation_tree.delete(item)
+        self.variation_tree_nodes = {}
+
+        if not self.current_game_node:
+            return
+
+        root_node = self.current_game_node.game()
+        root_id = self.variation_tree.insert("", "end", text="Начало", open=True)
+        self.variation_tree_nodes[root_id] = root_node
+
+        def add_children(parent_item: str, node: chess.pgn.GameNode, board: chess.Board) -> None:
+            for idx, child in enumerate(node.variations):
+                san = board.san(child.move)
+                move_prefix = f"{board.fullmove_number}. " if board.turn == chess.WHITE else f"{board.fullmove_number}... "
+                label = move_prefix + san
+                if idx > 0:
+                    label = f"[V{idx}] {label}"
+                item_id = self.variation_tree.insert(parent_item, "end", text=label, open=(idx == 0))
+                self.variation_tree_nodes[item_id] = child
+                board.push(child.move)
+                add_children(item_id, child, board)
+                board.pop()
+
+        add_children(root_id, root_node, root_node.board())
+        self._sync_variation_tree_selection()
+
+    def _sync_variation_tree_selection(self) -> None:
+        if not hasattr(self, "variation_tree"):
+            return
+        for item_id, node in self.variation_tree_nodes.items():
+            if node == self.current_game_node:
+                self.variation_tree.selection_set(item_id)
+                self.variation_tree.focus(item_id)
+                parent = item_id
+                while parent:
+                    parent = self.variation_tree.parent(parent)
+                    if parent:
+                        self.variation_tree.item(parent, open=True)
+                self.variation_tree.see(item_id)
+                break
+
+    def on_variation_tree_select(self, event: Optional[tk.Event] = None) -> None:
+        if not hasattr(self, "variation_tree"):
+            return
+        selection = self.variation_tree.selection()
+        if not selection:
+            return
+        node = self.variation_tree_nodes.get(selection[0])
+        if node and node != self.current_game_node:
+            self._set_active_node(node)
+
+    def _get_selected_variation_node(self) -> Optional[chess.pgn.GameNode]:
+        if not hasattr(self, "variation_tree"):
+            return None
+        selection = self.variation_tree.selection()
+        if not selection:
+            return None
+        return self.variation_tree_nodes.get(selection[0])
+
+    def promote_selected_variation_to_main(self) -> None:
+        node = self._get_selected_variation_node()
+        if not node or node.parent is None:
+            return
+        node.parent.promote_to_main(node)
+        self.invalidate_cached_report()
+        self.populate_variation_tree()
+        self.populate_moves_listbox()
+        self._set_active_node(node)
+
+    def delete_selected_variation(self) -> None:
+        node = self._get_selected_variation_node()
+        if not node or node.parent is None:
+            return
+        parent = node.parent
+        if messagebox.askyesno("Удалить вариант", "Удалить выбранный вариант со всеми продолжениями?"):
+            parent.remove_variation(node)
+            self.invalidate_cached_report()
+            self._set_active_node(parent)
+
+    def add_selected_engine_variation(self) -> None:
+        if not self.latest_analysis_lines or not self.current_game_node:
+            messagebox.showwarning("Нет анализа", "Сначала проанализируйте текущую позицию.")
+            return
+        if self.latest_analysis_fen != self.board_state.fen():
+            messagebox.showwarning("Нет анализа", "Актуальные линии анализа для этой позиции отсутствуют.")
+            return
+
+        selected_line = self.latest_analysis_lines[0]
+        selection = self.eval_tree.selection()
+        if selection:
+            selected_pv = self.eval_tree.item(selection[0], "values")[0]
+            for line in self.latest_analysis_lines:
+                if str(line.get("pv")) == str(selected_pv):
+                    selected_line = line
+                    break
+
+        move_uci = selected_line.get("move_uci")
+        if not move_uci:
+            return
+        try:
+            move = self.board_state.parse_uci(move_uci)
+        except Exception:
+            messagebox.showerror("Вариант", "Не удалось добавить вариант из анализа.")
+            return
+
+        self.invalidate_cached_report()
+        target_node = None
+        for variation in self.current_game_node.variations:
+            if variation.move == move:
+                target_node = variation
+                break
+        if target_node is None:
+            target_node = self.current_game_node.add_variation(move)
+        self._set_active_node(target_node)
+
     def show_annotation_menu(self, event: tk.Event) -> None:
         selection = self.moves_listbox.curselection()
         if not selection:
@@ -331,6 +467,7 @@ class InteractionMixin:
             self.update_board_display()
             self.update_info_panel()
             self.update_navigation_buttons()
+        self._sync_variation_tree_selection()
 
     def animate_move(self, move: chess.Move, captured: bool, is_reverse_animation: bool, piece_symbol: str) -> None:
         from_sq, to_sq = (move.to_square, move.from_square) if is_reverse_animation else (move.from_square, move.to_square)
@@ -369,6 +506,7 @@ class InteractionMixin:
         self.update_board_display()
         self.update_info_panel()
         self.update_navigation_buttons()
+        self._sync_variation_tree_selection()
 
     def get_best_moves_from_treeview(self) -> List[chess.Move]:
         moves: List[chess.Move] = []

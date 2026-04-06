@@ -3,3 +3,4 @@ matplotlib
 requests
 Pillow
 pygame
+chess-tcn

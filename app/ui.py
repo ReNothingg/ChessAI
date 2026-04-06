@@ -101,9 +101,11 @@ class UIFlowMixin:
         self.menu_bar.add_cascade(label="Файл", menu=file_menu)
         file_menu.add_command(label="Загрузить PGN...", command=self.load_pgn)
         file_menu.add_command(label="Загрузить FEN...", command=self.load_fen_dialog)
-        file_menu.add_command(label="Загрузить по URL (Lichess)...", command=self.load_from_url)
+        file_menu.add_command(label="Загрузить по URL (Lichess / Chess.com)...", command=self.load_from_url)
+        file_menu.add_command(label="Вставить PGN/FEN/URL из буфера", command=self.load_from_clipboard)
         file_menu.add_separator()
         file_menu.add_command(label="Сохранить PGN с аннотациями...", command=self.save_pgn_with_annotations)
+        file_menu.add_command(label="Пакетный анализ PGN...", command=self.start_batch_pgn_analysis)
         file_menu.add_separator()
         file_menu.add_command(label="Выход", command=self.on_closing)
 
@@ -111,6 +113,11 @@ class UIFlowMixin:
         self.menu_bar.add_cascade(label="Игра", menu=game_menu)
         game_menu.add_command(label="Новая игра с движком", command=self.start_new_game_vs_engine)
         game_menu.add_command(label="Режим: Только доска (Space)", command=self.toggle_board_only)
+
+        training_menu = tk.Menu(self.menu_bar, tearoff=0)
+        self.menu_bar.add_cascade(label="Тренировка", menu=training_menu)
+        training_menu.add_command(label="Найти лучший ход (P)", command=self.start_best_move_challenge)
+        training_menu.add_command(label="Задачи из ошибок партии", command=self.start_generated_puzzle_session)
 
         self.first_move_button = ttk.Button(pgn_controls_frame, text="|<", command=self.first_move_action, state=tk.DISABLED)
         self.first_move_button.pack(side=tk.LEFT, padx=2)
@@ -147,6 +154,14 @@ class UIFlowMixin:
         self.graph_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.graph_tab, text="График")
         self.create_graph_tab(self.graph_tab)
+
+        self.report_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.report_tab, text="Отчет")
+        self.create_report_tab(self.report_tab)
+
+        self.variations_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.variations_tab, text="Варианты")
+        self.create_variation_tab(self.variations_tab)
 
     def create_analysis_tab(self, parent: ttk.Frame) -> None:
         self.game_info_label = ttk.Label(parent, text="Партия не загружена", wraplength=INFO_PANEL_WIDTH - 20, justify=tk.LEFT)
@@ -223,6 +238,23 @@ class UIFlowMixin:
         self.eval_tree.heading("#3", text="Оценка")
         self.eval_tree.column("#3", width=90, anchor="w")
         self.eval_tree.pack(fill=tk.X, expand=True)
+        self.eval_tree.bind("<Double-1>", lambda e: self.add_selected_engine_variation())
+
+        coach_frame = ttk.LabelFrame(parent, text="Тренер", padding=6)
+        coach_frame.pack(fill=tk.X, padx=6, pady=6)
+        ttk.Checkbutton(
+            coach_frame,
+            text="Показывать подсказки",
+            variable=self.coach_mode_var,
+            command=self.toggle_coach_mode,
+        ).pack(anchor=tk.W)
+        self.coach_hint_var = tk.StringVar(value="Подсказка появится после анализа позиции или старта задачи.")
+        ttk.Label(
+            coach_frame,
+            textvariable=self.coach_hint_var,
+            wraplength=INFO_PANEL_WIDTH - 40,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, pady=(6, 0))
 
         self.game_status_label = ttk.Label(parent, text="", font=("Arial", 10, "bold"), foreground="blue")
         self.game_status_label.pack(anchor=tk.NW, fill=tk.X, pady=6, padx=6)
@@ -241,6 +273,35 @@ class UIFlowMixin:
         self.graph_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.update_evaluation_graph()
 
+    def create_report_tab(self, parent: ttk.Frame) -> None:
+        buttons = ttk.Frame(parent)
+        buttons.pack(fill=tk.X, padx=6, pady=(6, 0))
+        ttk.Button(buttons, text="Анализировать", command=self.start_full_game_analysis).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(buttons, text="Найти ход", command=self.start_best_move_challenge).pack(side=tk.LEFT, padx=(0, 6))
+        self.start_generated_puzzles_button = ttk.Button(
+            buttons,
+            text="Задачи из ошибок",
+            command=self.start_generated_puzzle_session,
+            state=tk.DISABLED,
+        )
+        self.start_generated_puzzles_button.pack(side=tk.LEFT)
+
+        self.report_text = tk.Text(parent, wrap=tk.WORD, height=20)
+        self.report_text.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.report_text.insert("1.0", "Отчет по партии появится здесь.")
+        self.report_text.configure(state=tk.DISABLED)
+
+    def create_variation_tab(self, parent: ttk.Frame) -> None:
+        buttons = ttk.Frame(parent)
+        buttons.pack(fill=tk.X, padx=6, pady=(6, 0))
+        ttk.Button(buttons, text="Добавить из анализа", command=self.add_selected_engine_variation).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(buttons, text="В главную", command=self.promote_selected_variation_to_main).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(buttons, text="Удалить", command=self.delete_selected_variation).pack(side=tk.LEFT)
+
+        self.variation_tree = ttk.Treeview(parent, show="tree")
+        self.variation_tree.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.variation_tree.bind("<<TreeviewSelect>>", self.on_variation_tree_select)
+
     def bind_shortcuts(self) -> None:
         self.root.bind("<space>", lambda e: self.toggle_board_only())
         self.root.bind("<Home>", lambda e: self.first_move_action())
@@ -253,6 +314,8 @@ class UIFlowMixin:
         self.root.bind("A", lambda e: self.request_analysis_current_pos())
         self.root.bind("t", lambda e: self.show_threat())
         self.root.bind("T", lambda e: self.show_threat())
+        self.root.bind("p", lambda e: self.start_best_move_challenge())
+        self.root.bind("P", lambda e: self.start_best_move_challenge())
         self.root.bind("h", lambda e: self.show_help_dialog())
         self.root.bind("H", lambda e: self.show_help_dialog())
 
@@ -517,12 +580,14 @@ class UIFlowMixin:
         text = "\n".join(
             [
                 "Горячие клавиши:",
-                "Space — режим только доски (toggle)",
-                "Home / End — в начало / в конец партии",
-                "← / → — перемотка ходов",
-                "F — перевернуть доску",
-                "A — анализ текущей позиции",
-                "T — показать угрозу",
+                "Space - режим только доски",
+                "Home / End - в начало / в конец партии",
+                "Left / Right - перемотка ходов",
+                "F - перевернуть доску",
+                "A - анализ текущей позиции",
+                "T - показать угрозу",
+                "P - найти лучший ход",
+                "Double click по лучшему ходу - добавить как вариант",
             ]
         )
         messagebox.showinfo("Помощь", text)
