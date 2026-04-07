@@ -5,7 +5,7 @@ from typing import List, Optional
 import chess
 import chess.pgn
 
-from config import ANIMATION_DELAY, ANIMATION_STEPS, SQUARE_SIZE
+from config import ANIMATION_DELAY, ANIMATION_STEPS
 
 
 class InteractionMixin:
@@ -142,8 +142,8 @@ class InteractionMixin:
         self.board_canvas.configure(cursor="hand2" if can_move_now else "arrow")
 
         if self.is_dragging and self.drag_image_id is not None:
-            x = event.x - SQUARE_SIZE // 2
-            y = event.y - SQUARE_SIZE // 2
+            x = event.x - self.square_size // 2
+            y = event.y - self.square_size // 2
             self.board_canvas.coords(self.drag_image_id, x, y)
 
     def on_mouse_down(self, event: tk.Event) -> None:
@@ -167,8 +167,8 @@ class InteractionMixin:
         symbol = piece.symbol()
         image = self.piece_images.get(symbol)
         if image:
-            x = event.x - SQUARE_SIZE // 2
-            y = event.y - SQUARE_SIZE // 2
+            x = event.x - self.square_size // 2
+            y = event.y - self.square_size // 2
             self.drag_image_id = self.board_canvas.create_image(x, y, image=image, anchor=tk.NW, tags="dragging")
             self.board_canvas.delete(f"piece_at_{square_index}")
         self.board_canvas.configure(cursor="hand2")
@@ -176,8 +176,8 @@ class InteractionMixin:
     def on_mouse_drag(self, event: tk.Event) -> None:
         if not self.is_dragging or self.drag_image_id is None:
             return
-        x = event.x - SQUARE_SIZE // 2
-        y = event.y - SQUARE_SIZE // 2
+        x = event.x - self.square_size // 2
+        y = event.y - self.square_size // 2
         self.board_canvas.coords(self.drag_image_id, x, y)
 
     def on_mouse_up(self, event: tk.Event) -> None:

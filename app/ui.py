@@ -10,8 +10,6 @@ from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
 from config import (
-    BOARD_IMG_HEIGHT,
-    BOARD_IMG_WIDTH,
     BOARD_ONLY_HINTS,
     EVAL_BAR_HEIGHT,
     IMAGE_DIR,
@@ -19,7 +17,6 @@ from config import (
     PIECE_DIR,
     PIECE_SYMBOL_TO_FILE,
     SOUND_DIR,
-    SQUARE_SIZE,
 )
 from .analysis_utils import mate_to_white_perspective, score_to_white_perspective
 from .helpers import make_placeholder_piece
@@ -39,56 +36,86 @@ class UIFlowMixin:
             print(f"Sound init error: {exc}")
 
     def load_assets(self) -> None:
+        self.board_bg_source: Optional[Image.Image] = None
+        self.piece_source_images: dict[str, Optional[Image.Image]] = {}
+
         try:
             board_img_path = os.path.join(IMAGE_DIR, "board.png")
             if os.path.exists(board_img_path):
-                pil_board_image = Image.open(board_img_path).resize((BOARD_IMG_WIDTH, BOARD_IMG_HEIGHT), Image.LANCZOS)
-                self.board_bg_image = ImageTk.PhotoImage(pil_board_image)
-            else:
-                self.board_bg_image = None
+                with Image.open(board_img_path) as board_image:
+                    self.board_bg_source = board_image.convert("RGBA")
         except Exception:
-            self.board_bg_image = None
+            self.board_bg_source = None
 
         for symbol in list("PNBRQKpnbrqk"):
             self.piece_images[symbol] = None
+            self.piece_source_images[symbol] = None
         for symbol, filename in PIECE_SYMBOL_TO_FILE.items():
             color_folder = "white" if symbol.isupper() else "black"
             path = os.path.join(PIECE_DIR, color_folder, filename)
             if os.path.exists(path):
                 try:
-                    img = Image.open(path).resize((SQUARE_SIZE, SQUARE_SIZE), Image.LANCZOS)
-                    self.piece_images[symbol] = ImageTk.PhotoImage(img)
+                    with Image.open(path) as piece_image:
+                        self.piece_source_images[symbol] = piece_image.convert("RGBA")
                 except Exception:
-                    fallback_symbol = symbol.upper() if symbol.isupper() else symbol.lower()
-                    self.piece_images[symbol] = make_placeholder_piece(fallback_symbol)
+                    self.piece_source_images[symbol] = None
+
+        self.refresh_scaled_assets()
+
+    def refresh_scaled_assets(self) -> None:
+        if self.board_bg_source is not None:
+            resized_board = self.board_bg_source.resize((self.board_size, self.board_size), Image.LANCZOS)
+            self.board_bg_image = ImageTk.PhotoImage(resized_board)
+        else:
+            self.board_bg_image = None
+
+        for symbol in list("PNBRQKpnbrqk"):
+            source_image = self.piece_source_images.get(symbol)
+            if source_image is not None:
+                resized_piece = source_image.resize((self.square_size, self.square_size), Image.LANCZOS)
+                self.piece_images[symbol] = ImageTk.PhotoImage(resized_piece)
             else:
                 fallback_symbol = symbol.upper() if symbol.isupper() else symbol.lower()
-                self.piece_images[symbol] = make_placeholder_piece(fallback_symbol)
+                self.piece_images[symbol] = make_placeholder_piece(fallback_symbol, size=self.square_size)
+
+    def redraw_board_background(self) -> None:
+        if not hasattr(self, "board_canvas"):
+            return
+
+        self.board_canvas.delete("board_bg")
+        if self.board_bg_image:
+            self.board_canvas.create_image(0, 0, anchor=tk.NW, image=self.board_bg_image, tags="board_bg")
+            self.board_canvas.tag_lower("board_bg")
 
     def create_widgets(self) -> None:
         self.main_frame = ttk.Frame(self.root, padding=8)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        left_frame = ttk.Frame(self.main_frame)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        self.left_frame = ttk.Frame(self.main_frame)
+        self.left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        self.board_area = ttk.Frame(self.left_frame)
+        self.board_area.pack(fill=tk.BOTH, expand=True)
+        self.board_area.pack_propagate(False)
+        self.board_area.bind("<Configure>", self.on_board_area_configure)
 
         self.board_canvas = tk.Canvas(
-            left_frame,
-            width=BOARD_IMG_WIDTH,
-            height=BOARD_IMG_HEIGHT,
+            self.board_area,
+            width=self.board_size,
+            height=self.board_size,
             bg="grey20",
             highlightthickness=0,
         )
-        self.board_canvas.pack()
-        if getattr(self, "board_bg_image", None):
-            self.board_canvas.create_image(0, 0, anchor=tk.NW, image=self.board_bg_image)
+        self.board_canvas.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.redraw_board_background()
 
-        self.create_board_controls(left_frame)
+        self.create_board_controls(self.left_frame)
 
         self.info_panel = ttk.Frame(self.main_frame, width=INFO_PANEL_WIDTH)
         self.info_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=False)
-        self.info_panel.pack_propagate(False)
+        self.info_panel.bind("<Configure>", self.on_info_panel_configure)
         self.create_info_panel_widgets()
+        self.root.after_idle(self.refresh_responsive_layout)
 
     def create_board_controls(self, parent: ttk.Frame) -> None:
         pgn_controls_frame = ttk.Frame(parent)
@@ -134,9 +161,9 @@ class UIFlowMixin:
 
         self.eval_bar_canvas = tk.Canvas(parent, height=EVAL_BAR_HEIGHT, bg="dim gray", highlightthickness=0)
         self.eval_bar_canvas.pack(fill=tk.X, pady=(6, 0))
-        self.eval_line = self.eval_bar_canvas.create_rectangle(0, 0, BOARD_IMG_WIDTH / 2, EVAL_BAR_HEIGHT, fill="white", outline="")
+        self.eval_line = self.eval_bar_canvas.create_rectangle(0, 0, self.board_size / 2, EVAL_BAR_HEIGHT, fill="white", outline="")
         self.eval_text = self.eval_bar_canvas.create_text(
-            BOARD_IMG_WIDTH / 2,
+            self.board_size / 2,
             EVAL_BAR_HEIGHT / 2,
             text="0.0",
             fill="black",
@@ -249,12 +276,13 @@ class UIFlowMixin:
             command=self.toggle_coach_mode,
         ).pack(anchor=tk.W)
         self.coach_hint_var = tk.StringVar(value="Подсказка появится после анализа позиции или старта задачи.")
-        ttk.Label(
+        self.coach_hint_label = ttk.Label(
             coach_frame,
             textvariable=self.coach_hint_var,
             wraplength=INFO_PANEL_WIDTH - 40,
             justify=tk.LEFT,
-        ).pack(fill=tk.X, pady=(6, 0))
+        )
+        self.coach_hint_label.pack(fill=tk.X, pady=(6, 0))
 
         self.game_status_label = ttk.Label(parent, text="", font=("Arial", 10, "bold"), foreground="blue")
         self.game_status_label.pack(anchor=tk.NW, fill=tk.X, pady=6, padx=6)
@@ -301,6 +329,62 @@ class UIFlowMixin:
         self.variation_tree = ttk.Treeview(parent, show="tree")
         self.variation_tree.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         self.variation_tree.bind("<<TreeviewSelect>>", self.on_variation_tree_select)
+
+    def on_board_area_configure(self, event: Optional[tk.Event] = None) -> None:
+        self._schedule_responsive_refresh()
+
+    def on_info_panel_configure(self, event: Optional[tk.Event] = None) -> None:
+        self._schedule_responsive_refresh()
+
+    def _schedule_responsive_refresh(self) -> None:
+        pending_job = getattr(self, "_responsive_refresh_job", None)
+        if pending_job is not None:
+            self.root.after_cancel(pending_job)
+        self._responsive_refresh_job = self.root.after(30, self.refresh_responsive_layout)
+
+    def refresh_responsive_layout(self) -> None:
+        self._responsive_refresh_job = None
+
+        if not hasattr(self, "board_area") or not hasattr(self, "board_canvas"):
+            return
+
+        available_width = self.board_area.winfo_width()
+        available_height = self.board_area.winfo_height()
+        if available_width <= 1 or available_height <= 1:
+            return
+
+        new_board_size = min(available_width, available_height)
+        new_board_size = max(self.min_board_size, new_board_size)
+        new_board_size = max(8, (new_board_size // 8) * 8)
+
+        if new_board_size != self.board_size:
+            self.board_size = new_board_size
+            self.square_size = max(1, self.board_size // 8)
+            self.refresh_scaled_assets()
+            self.board_canvas.config(width=self.board_size, height=self.board_size)
+            self.redraw_board_background()
+            self.update_board_display()
+
+        self.refresh_info_panel_layout()
+
+    def refresh_info_panel_layout(self) -> None:
+        panel_width = self.info_panel.winfo_width() if hasattr(self, "info_panel") else INFO_PANEL_WIDTH
+        if panel_width <= 1:
+            panel_width = INFO_PANEL_WIDTH
+
+        if hasattr(self, "game_info_label"):
+            self.game_info_label.configure(wraplength=max(180, panel_width - 24))
+        if hasattr(self, "coach_hint_label"):
+            self.coach_hint_label.configure(wraplength=max(160, panel_width - 40))
+
+        if hasattr(self, "eval_tree"):
+            available_width = max(210, panel_width - 36)
+            rank_width = 42
+            score_width = max(76, min(110, available_width // 3))
+            move_width = max(92, available_width - rank_width - score_width)
+            self.eval_tree.column("#1", width=rank_width, minwidth=rank_width, anchor="center")
+            self.eval_tree.column("#2", width=move_width, minwidth=92, anchor="w")
+            self.eval_tree.column("#3", width=score_width, minwidth=76, anchor="w")
 
     def bind_shortcuts(self) -> None:
         self.root.bind("<space>", lambda e: self.toggle_board_only())
@@ -356,10 +440,10 @@ class UIFlowMixin:
                 self.board_canvas.create_image(x, y, anchor=tk.NW, image=image, tags=("piece", f"piece_at_{square_index}"))
             else:
                 self.board_canvas.create_text(
-                    x + SQUARE_SIZE / 2,
-                    y + SQUARE_SIZE / 2,
+                    x + self.square_size / 2,
+                    y + self.square_size / 2,
                     text=symbol,
-                    font=("Arial", 18),
+                    font=("Arial", max(12, self.square_size // 3)),
                     tags=("piece", f"piece_at_{square_index}"),
                 )
 
@@ -391,10 +475,11 @@ class UIFlowMixin:
             )
 
     def _draw_board_hints(self) -> None:
-        width = 220
-        height = len(BOARD_ONLY_HINTS) * 16 + 12
-        x = BOARD_IMG_WIDTH - width - 8
-        y = BOARD_IMG_HEIGHT - height - 8
+        width = min(220, max(150, self.board_size - 16))
+        line_height = 16
+        height = len(BOARD_ONLY_HINTS) * line_height + 12
+        x = self.board_size - width - 8
+        y = self.board_size - height - 8
         self.board_canvas.create_rectangle(
             x,
             y,
@@ -409,7 +494,7 @@ class UIFlowMixin:
         for idx, line in enumerate(BOARD_ONLY_HINTS):
             self.board_canvas.create_text(
                 x + 8,
-                y + 8 + idx * 16,
+                y + 8 + idx * line_height,
                 anchor="nw",
                 text=line,
                 font=("Arial", 9),
@@ -421,16 +506,16 @@ class UIFlowMixin:
         file_index = chess.square_file(square_index)
         rank_index = chess.square_rank(square_index)
         if self.board_orientation_white_pov:
-            x, y = file_index * SQUARE_SIZE, (7 - rank_index) * SQUARE_SIZE
+            x, y = file_index * self.square_size, (7 - rank_index) * self.square_size
         else:
-            x, y = (7 - file_index) * SQUARE_SIZE, rank_index * SQUARE_SIZE
+            x, y = (7 - file_index) * self.square_size, rank_index * self.square_size
         return x, y
 
     def get_square_from_coords(self, x: int, y: int) -> Optional[int]:
-        if x < 0 or y < 0 or x >= BOARD_IMG_WIDTH or y >= BOARD_IMG_HEIGHT:
+        if x < 0 or y < 0 or x >= self.board_size or y >= self.board_size:
             return None
-        file_index = int(x // SQUARE_SIZE)
-        rank_index = int(y // SQUARE_SIZE)
+        file_index = int(x // self.square_size)
+        rank_index = int(y // self.square_size)
         if self.board_orientation_white_pov:
             file_index, rank_index = file_index, 7 - rank_index
         else:
@@ -442,7 +527,7 @@ class UIFlowMixin:
     def draw_arrow(self, from_sq: int, to_sq: int, color: str, width: int, tag: str) -> None:
         x1, y1 = self.get_square_coords(from_sq)
         x2, y2 = self.get_square_coords(to_sq)
-        center_offset = SQUARE_SIZE / 2
+        center_offset = self.square_size / 2
         self.board_canvas.create_line(
             x1 + center_offset,
             y1 + center_offset,
@@ -482,8 +567,8 @@ class UIFlowMixin:
         self.board_canvas.create_rectangle(
             x,
             y,
-            x + SQUARE_SIZE,
-            y + SQUARE_SIZE,
+            x + self.square_size,
+            y + self.square_size,
             outline="#FFD700",
             width=4,
             tags="highlight_selected",
@@ -493,13 +578,13 @@ class UIFlowMixin:
             if move.from_square != from_square:
                 continue
             to_x, to_y = self.get_square_coords(move.to_square)
-            radius = SQUARE_SIZE / 6
+            radius = self.square_size / 6
             fill_color = "#FF6060" if self.board_state.is_capture(move) else "#A0A0A0"
             self.board_canvas.create_oval(
-                to_x + SQUARE_SIZE / 2 - radius,
-                to_y + SQUARE_SIZE / 2 - radius,
-                to_x + SQUARE_SIZE / 2 + radius,
-                to_y + SQUARE_SIZE / 2 + radius,
+                to_x + self.square_size / 2 - radius,
+                to_y + self.square_size / 2 - radius,
+                to_x + self.square_size / 2 + radius,
+                to_y + self.square_size / 2 + radius,
                 fill=fill_color,
                 outline="",
                 tags="highlight",
@@ -516,7 +601,7 @@ class UIFlowMixin:
     def update_eval_bar(self, score_cp: Optional[int], score_mate: Optional[int], max_eval_cp: int = 1000) -> None:
         bar_width = self.eval_bar_canvas.winfo_width()
         if bar_width <= 1:
-            bar_width = BOARD_IMG_WIDTH
+            bar_width = self.board_size
 
         normalized_score, text = 0.5, "0.0"
         if self.board_state.is_checkmate():
@@ -561,7 +646,7 @@ class UIFlowMixin:
     def toggle_board_only(self) -> None:
         self.board_only_mode = not self.board_only_mode
         if self.board_only_mode:
-            self.info_panel.forget()
+            self.info_panel.pack_forget()
             try:
                 self.menu_bar.entryconfig("Файл", state="disabled")
             except Exception:
@@ -574,6 +659,7 @@ class UIFlowMixin:
             except Exception:
                 pass
             self.board_canvas.delete("hint_overlay")
+        self._schedule_responsive_refresh()
         self.update_board_display()
 
     def show_help_dialog(self) -> None:

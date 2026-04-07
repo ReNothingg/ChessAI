@@ -9,11 +9,13 @@ import pygame
 from PIL import ImageTk
 
 from config import (
-    BOARD_IMG_HEIGHT,
     BOARD_IMG_WIDTH,
     DEFAULT_ENGINE_MOVETIME_MS,
     DEFAULT_ENGINE_MULTIPV,
     DEFAULT_ENGINE_SKILL,
+    INFO_PANEL_MIN_WIDTH,
+    MIN_BOARD_SIZE,
+    SQUARE_SIZE,
 )
 from engine_handler import EngineHandler
 
@@ -29,7 +31,14 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("ChessAI")
-        self.root.minsize(BOARD_IMG_WIDTH + 20, BOARD_IMG_HEIGHT + 120)
+        self.board_size = BOARD_IMG_WIDTH
+        self.square_size = SQUARE_SIZE
+        self.min_board_size = MIN_BOARD_SIZE
+        self.min_info_panel_width = INFO_PANEL_MIN_WIDTH
+        self.root.minsize(
+            self.min_board_size + self.min_info_panel_width + 48,
+            self.min_board_size + 180,
+        )
 
         self.piece_images: Dict[str, ImageTk.PhotoImage] = {}
         self.current_game_node: Optional[chess.pgn.GameNode] = None
