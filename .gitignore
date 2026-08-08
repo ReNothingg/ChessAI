@@ -1,2 +1,6 @@
 **/__pycache__/
 **/PGNs/
+.DS_Store
+build/
+dist/
+.pyinstaller-cache/

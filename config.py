@@ -1,4 +1,5 @@
 import os
+import shutil
 
 # Визуальные константы
 BOARD_IMG_WIDTH = 600
@@ -37,14 +38,30 @@ DEFAULT_ENGINE_MOVETIME_MS = 2000
 DEFAULT_BATCH_MOVETIME_MS = 400
 DEFAULT_TRAINING_PUZZLES = 8
 
-# Путь к stockfish
+# Путь к Stockfish. На macOS движок обычно устанавливается Homebrew в
+# /opt/homebrew/bin (Apple Silicon) или /usr/local/bin (Intel).
+def _find_unix_stockfish() -> str:
+    local_engine = os.path.join(BASE_DIR, "stockfish")
+    candidates = [
+        local_engine,
+        shutil.which("stockfish"),
+        "/opt/homebrew/bin/stockfish",
+        "/usr/local/bin/stockfish",
+        "/opt/local/bin/stockfish",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return local_engine
+
+
 _stockfish_from_env = os.getenv("STOCKFISH_PATH")
 if _stockfish_from_env:
     STOCKFISH_PATH_WINDOWS = _stockfish_from_env
     STOCKFISH_PATH_UNIX = _stockfish_from_env
 else:
     STOCKFISH_PATH_WINDOWS = os.path.join(BASE_DIR, "stockfish.exe")
-    STOCKFISH_PATH_UNIX = os.path.join(BASE_DIR, "stockfish")
+    STOCKFISH_PATH_UNIX = _find_unix_stockfish()
 
 # Подсказки
 BOARD_ONLY_HINTS = [

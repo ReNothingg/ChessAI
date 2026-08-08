@@ -35,7 +35,13 @@ class EngineHandler:
 
     def _start_engine(self) -> None:
         if not os.path.exists(self.engine_path):
-            log_error(f"Движок не найден: {self.engine_path}")
+            hint = ""
+            if platform.system() == "Darwin":
+                hint = " Установите его: brew install stockfish, либо задайте STOCKFISH_PATH."
+            log_error(f"Движок не найден: {self.engine_path}.{hint}")
+            return
+        if not os.access(self.engine_path, os.X_OK):
+            log_error(f"Нет прав на запуск движка: {self.engine_path}. Выполните: chmod +x '{self.engine_path}'")
             return
         try:
             self.process = subprocess.Popen(
@@ -284,4 +290,3 @@ class EngineHandler:
                 self._out_queue.get_nowait()
         except queue.Empty:
             pass
-
