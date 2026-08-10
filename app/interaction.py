@@ -36,6 +36,8 @@ class InteractionMixin:
                 break
         if new_node is None:
             new_node = self.current_game_node.add_variation(move)
+            self.game_tree_revision += 1
+            self._moves_list_signature = None
 
         self._set_active_node(
             new_node,
@@ -245,11 +247,13 @@ class InteractionMixin:
         if self.current_game_node and self.current_game_node.parent is not None:
             move_to_undo = self.current_game_node.move
             target_node = self.current_game_node.parent
+            captured = target_node.board().is_capture(move_to_undo)
             animated_piece_symbol = self.get_animated_piece_symbol(move_to_undo, is_undo=True)
             self._set_active_node(
                 target_node,
                 is_forward_move=False,
                 move_to_animate=move_to_undo,
+                captured=captured,
                 animated_piece_symbol=animated_piece_symbol,
             )
 
@@ -270,28 +274,35 @@ class InteractionMixin:
         if target_node != self.current_game_node:
             self._set_active_node(target_node)
 
-    def on_move_select_from_listbox(self, event: tk.Event) -> None:
-        if self.is_animating or not event.widget.curselection():
+    def on_move_select_from_tree(self, event: tk.Event) -> None:
+        selection = event.widget.selection()
+        if self.is_animating or not selection:
             return
 
-        selected_idx = event.widget.curselection()[0]
-        if 0 <= selected_idx < len(self.move_nodes_in_listbox):
-            target_node = self.move_nodes_in_listbox[selected_idx]
-            if target_node != self.current_game_node:
-                self._set_active_node(target_node)
+        target_node = self.move_tree_nodes.get(selection[0])
+        if target_node is not None and target_node != self.current_game_node:
+            self._set_active_node(target_node)
 
-    def populate_variation_tree(self) -> None:
+    def populate_variation_tree(self, force: bool = False) -> None:
         if not hasattr(self, "variation_tree"):
+            return
+
+        if not self.current_game_node:
+            for item in self.variation_tree.get_children():
+                self.variation_tree.delete(item)
+            self.variation_tree_nodes = {}
+            self._rendered_variation_signature = None
+            return
+
+        root_node = self.current_game_node.game()
+        signature = (id(root_node), self.game_tree_revision)
+        if not force and signature == self._rendered_variation_signature:
+            self._sync_variation_tree_selection()
             return
 
         for item in self.variation_tree.get_children():
             self.variation_tree.delete(item)
         self.variation_tree_nodes = {}
-
-        if not self.current_game_node:
-            return
-
-        root_node = self.current_game_node.game()
         root_id = self.variation_tree.insert("", "end", text="Начало", open=True)
         self.variation_tree_nodes[root_id] = root_node
 
@@ -309,6 +320,7 @@ class InteractionMixin:
                 board.pop()
 
         add_children(root_id, root_node, root_node.board())
+        self._rendered_variation_signature = signature
         self._sync_variation_tree_selection()
 
     def _sync_variation_tree_selection(self) -> None:
@@ -350,8 +362,10 @@ class InteractionMixin:
             return
         node.parent.promote_to_main(node)
         self.invalidate_cached_report()
-        self.populate_variation_tree()
-        self.populate_moves_listbox()
+        self.game_tree_revision += 1
+        self._moves_list_signature = None
+        self.populate_variation_tree(force=True)
+        self.populate_moves_listbox(force=True)
         self._set_active_node(node)
 
     def delete_selected_variation(self) -> None:
@@ -362,6 +376,8 @@ class InteractionMixin:
         if messagebox.askyesno("Удалить вариант", "Удалить выбранный вариант со всеми продолжениями?"):
             parent.remove_variation(node)
             self.invalidate_cached_report()
+            self.game_tree_revision += 1
+            self._moves_list_signature = None
             self._set_active_node(parent)
 
     def add_selected_engine_variation(self) -> None:
@@ -398,18 +414,23 @@ class InteractionMixin:
                 break
         if target_node is None:
             target_node = self.current_game_node.add_variation(move)
+            self.game_tree_revision += 1
+            self._moves_list_signature = None
         self._set_active_node(target_node)
 
     def show_annotation_menu(self, event: tk.Event) -> None:
-        selection = self.moves_listbox.curselection()
-        if not selection:
+        item_id = self.moves_tree.identify_row(event.y)
+        if item_id:
+            self.moves_tree.selection_set(item_id)
+            self.moves_tree.focus(item_id)
+        else:
+            selection = self.moves_tree.selection()
+            item_id = selection[0] if selection else ""
+
+        node_to_annotate = self.move_tree_nodes.get(item_id)
+        if node_to_annotate is None or node_to_annotate.parent is None:
             return
 
-        selected_idx = selection[0]
-        if selected_idx == 0:
-            return
-
-        node_to_annotate = self.move_nodes_in_listbox[selected_idx]
         menu = tk.Menu(self.root, tearoff=0)
         nags = {
             "Хороший ход (!)": 1,
@@ -429,18 +450,18 @@ class InteractionMixin:
 
     def add_nag_annotation(self, node: chess.pgn.GameNode, nag_code: int) -> None:
         node.nags.add(nag_code)
-        self.populate_moves_listbox()
+        self.populate_moves_listbox(force=True)
 
     def add_text_comment(self, node: chess.pgn.GameNode) -> None:
         comment = simpledialog.askstring("Комментарий", "Введите ваш комментарий:", initialvalue=node.comment, parent=self.root)
         if comment is not None:
             node.comment = comment
-            self.populate_moves_listbox()
+            self.populate_moves_listbox(force=True)
 
     def clear_annotations(self, node: chess.pgn.GameNode) -> None:
         node.nags.clear()
         node.comment = ""
-        self.populate_moves_listbox()
+        self.populate_moves_listbox(force=True)
 
     def _set_active_node(
         self,
@@ -456,7 +477,12 @@ class InteractionMixin:
         self.current_game_node = target_node
         self.board_state = self.current_game_node.board()
 
-        if move_to_animate:
+        should_animate = (
+            move_to_animate is not None
+            and animated_piece_symbol is not None
+            and self.animations_enabled_var.get()
+        )
+        if should_animate:
             self.update_board_display(
                 move_to_animate=move_to_animate,
                 captured=captured,
@@ -467,6 +493,7 @@ class InteractionMixin:
             self.update_board_display()
             self.update_info_panel()
             self.update_navigation_buttons()
+            self.update_evaluation_graph()
         self._sync_variation_tree_selection()
 
     def animate_move(self, move: chess.Move, captured: bool, is_reverse_animation: bool, piece_symbol: str) -> None:
@@ -506,6 +533,7 @@ class InteractionMixin:
         self.update_board_display()
         self.update_info_panel()
         self.update_navigation_buttons()
+        self.update_evaluation_graph()
         self._sync_variation_tree_selection()
 
     def get_best_moves_from_treeview(self) -> List[chess.Move]:

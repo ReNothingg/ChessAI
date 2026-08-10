@@ -29,13 +29,26 @@ class AnalysisMixin:
     def invalidate_cached_report(self) -> None:
         self.latest_game_report = None
         self.evaluation_history = []
+        self._rendered_report_signature = None
         self.refresh_report_panel()
 
     def refresh_report_panel(self) -> None:
         if not hasattr(self, "report_text"):
             return
 
-        headers = self.current_game_node.game().headers if self.current_game_node else {}
+        game = self.current_game_node.game() if self.current_game_node else None
+        signature = (
+            id(game),
+            id(self.latest_game_report),
+            self.training_session_name,
+            self.training_index,
+            self.training_score,
+            len(self.training_puzzles),
+        )
+        if signature == self._rendered_report_signature:
+            return
+
+        headers = game.headers if game else {}
         report_text = build_report_text(self.latest_game_report, headers=headers)
         if self.training_puzzles and self.training_index >= 0:
             report_text += (
@@ -48,6 +61,7 @@ class AnalysisMixin:
         self.report_text.delete("1.0", tk.END)
         self.report_text.insert("1.0", report_text)
         self.report_text.configure(state=tk.DISABLED)
+        self._rendered_report_signature = signature
 
         if hasattr(self, "start_generated_puzzles_button"):
             state = tk.NORMAL if self.latest_game_report else tk.DISABLED
@@ -108,6 +122,9 @@ class AnalysisMixin:
 
         self.full_analysis_in_progress = True
         self.analyze_game_button.config(state=tk.DISABLED)
+        self.quick_analysis_button.config(state=tk.DISABLED)
+        self.threat_button.config(state=tk.DISABLED)
+        self.set_status_message("Анализируем всю партию…")
 
         self.analysis_progress_win = Toplevel(self.root)
         self.analysis_progress_win.title("Анализ")
@@ -161,18 +178,25 @@ class AnalysisMixin:
                 self.analysis_progress_win.destroy()
             self.full_analysis_in_progress = False
             self.analyze_game_button.config(state=tk.NORMAL)
+            self.quick_analysis_button.config(state=tk.NORMAL)
+            self.threat_button.config(state=tk.NORMAL)
 
             if failed_reason:
+                self.set_status_message("Не удалось завершить анализ", clear_after_ms=4000)
                 messagebox.showerror("Ошибка анализа", f"Полный анализ завершился с ошибкой: {failed_reason}")
                 return
 
             self.latest_game_report = report
             self.evaluation_history = list(report.evaluation_history) if report else []
-            self.populate_moves_listbox()
+            self.populate_moves_listbox(force=True)
             self.populate_variation_tree()
             self.update_evaluation_graph()
             self.refresh_report_panel()
             puzzle_count = len(build_training_puzzles(report, max_items=DEFAULT_TRAINING_PUZZLES)) if report else 0
+            self.set_status_message(
+                f"Анализ завершен · тренировочных позиций: {puzzle_count}",
+                clear_after_ms=6000,
+            )
             messagebox.showinfo(
                 "Анализ завершен",
                 f"Анализ партии окончен. Отчет обновлен, а для тренировки доступно {puzzle_count} позиций.",
@@ -181,10 +205,11 @@ class AnalysisMixin:
         self.root.after(0, finish_analysis)
 
     def show_threat(self) -> None:
-        if self.is_animating or self.board_state.is_game_over():
+        if self.full_analysis_in_progress or self.is_animating or self.board_state.is_game_over():
             return
 
         expected_fen = self.board_state.fen()
+        self.set_status_message("Ищем главную угрозу…")
 
         def get_threat_in_thread() -> None:
             if not self.engine or not self.engine.process:
@@ -199,6 +224,7 @@ class AnalysisMixin:
                 try:
                     self.threat_move_obj = self.board_state.parse_uci(threat_uci)
                     self._draw_move_arrows()
+                    self.set_status_message("Угроза показана красной стрелкой", clear_after_ms=3500)
                 except Exception:
                     self.threat_move_obj = None
 
@@ -209,17 +235,23 @@ class AnalysisMixin:
     def request_analysis_current_pos(self) -> None:
         if self.game_mode == "puzzle":
             return
+        if self.full_analysis_in_progress:
+            self.set_status_message("Сначала дождитесь завершения анализа партии", clear_after_ms=3000)
+            return
         if self.is_animating or not self.engine or not self.engine.process or self.board_state.is_game_over():
             return
 
         current_fen = self.board_state.fen()
         if self.analysis_in_flight:
             self.pending_analysis_fen = current_fen
+            self.set_status_message("Позиция добавлена в очередь анализа")
             return
 
         self.clear_evaluation_display()
         self.analysis_in_flight = True
         self.pending_analysis_fen = None
+        self.quick_analysis_button.config(state=tk.DISABLED, text="Анализируем…")
+        self.set_status_message("Stockfish анализирует позицию…")
         threading.Thread(target=self._run_engine_analysis, args=(current_fen,), daemon=True).start()
 
     def _run_engine_analysis(self, fen_string: str) -> None:
@@ -245,12 +277,15 @@ class AnalysisMixin:
 
         self.pending_analysis_fen = None
         self.analysis_in_flight = True
+        self.quick_analysis_button.config(state=tk.DISABLED, text="Анализируем…")
         threading.Thread(target=self._run_engine_analysis, args=(pending_fen,), daemon=True).start()
 
     def process_analysis_queue(self) -> None:
         try:
             analysis_lines, analyzed_fen = self.analysis_queue.get_nowait()
             self.analysis_in_flight = False
+            quick_state = tk.DISABLED if self.full_analysis_in_progress else tk.NORMAL
+            self.quick_analysis_button.config(state=quick_state, text="Анализ позиции")
 
             if self.board_state.fen() != analyzed_fen or self.is_animating:
                 return
@@ -285,8 +320,12 @@ class AnalysisMixin:
                 self.update_eval_bar(first_line.get("score_cp"), first_line.get("score_mate"))
                 self._draw_move_arrows()
                 self._update_coach_hint_from_analysis(analysis_lines)
+                depth = first_line.get("depth")
+                suffix = f" · глубина {depth}" if depth else ""
+                self.set_status_message(f"Позиция проанализирована{suffix}", clear_after_ms=3000)
             else:
                 self.update_coach_hint_display("")
+                self.set_status_message("Stockfish не вернул варианты", clear_after_ms=3500)
         except queue.Empty:
             pass
         finally:

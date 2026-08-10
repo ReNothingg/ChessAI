@@ -10,7 +10,6 @@ MIN_BOARD_SIZE = 320
 # Панель информации справа
 INFO_PANEL_WIDTH = 420
 INFO_PANEL_MIN_WIDTH = 260
-EVAL_BAR_HEIGHT = 28
 
 # Ассеты
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,7 +28,7 @@ PIECE_SYMBOL_TO_FILE = {
 
 # Анимация
 ANIMATION_STEPS = 10
-ANIMATION_DELAY = 0
+ANIMATION_DELAY = 10
 
 # Engine defaults
 DEFAULT_ENGINE_SKILL = 20

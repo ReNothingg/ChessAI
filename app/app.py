@@ -39,6 +39,14 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
             self.min_board_size + self.min_info_panel_width + 48,
             self.min_board_size + 180,
         )
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = min(1240, max(860, screen_width - 120))
+        window_height = min(820, max(620, screen_height - 140))
+        window_x = max(0, (screen_width - window_width) // 2)
+        window_y = max(0, (screen_height - window_height) // 2)
+        self._initial_window_geometry = f"{window_width}x{window_height}+{window_x}+{window_y}"
+        self.root.geometry(self._initial_window_geometry)
 
         self.piece_images: Dict[str, ImageTk.PhotoImage] = {}
         self.current_game_node: Optional[chess.pgn.GameNode] = None
@@ -54,7 +62,7 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
         self.game_mode: str = "analysis"
         self.user_color: Optional[bool] = None
         self.evaluation_history: List[float] = []
-        self.move_nodes_in_listbox: List[chess.pgn.GameNode] = []
+        self.move_tree_nodes: Dict[str, chess.pgn.GameNode] = {}
 
         self.engine_skill_var = tk.IntVar(value=DEFAULT_ENGINE_SKILL)
         self.engine_multipv_var = tk.IntVar(value=DEFAULT_ENGINE_MULTIPV)
@@ -62,6 +70,8 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
 
         self.board_only_mode = False
         self.hints_overlay_id = None
+        self.animations_enabled_var = tk.BooleanVar(value=True)
+        self.info_panel_visible_var = tk.BooleanVar(value=True)
 
         self.analysis_queue: queue.Queue = queue.Queue()
         self.threat_move_obj: Optional[chess.Move] = None
@@ -77,6 +87,12 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
         self.training_restore_state: Optional[dict] = None
 
         self.variation_tree_nodes: Dict[str, chess.pgn.GameNode] = {}
+        self.game_tree_revision = 0
+        self._rendered_variation_signature = None
+        self._moves_list_signature = None
+        self._rendered_report_signature = None
+        self._opening_cache_signature = None
+        self._opening_cache = None
         self.coach_mode_var = tk.BooleanVar(value=True)
 
         self.analysis_in_flight = False
@@ -84,6 +100,8 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
         self.full_analysis_in_progress = False
 
         self.init_sound()
+        self.show_coordinates_var = tk.BooleanVar(value=True)
+        self.sound_enabled_var = tk.BooleanVar(value=self.sound_enabled)
 
         self.engine = EngineHandler(initial_skill_level=self.get_engine_skill_level())
         if not self.engine.process:
@@ -91,11 +109,15 @@ class ChessAnalyzerApp(UIFlowMixin, GameFlowMixin, InteractionMixin, AnalysisMix
 
         self.load_assets()
         self.create_widgets()
+        # Applying the macOS full-size content style resets a toplevel's
+        # geometry on some Tk builds. Restore the intended size afterwards.
+        self.root.geometry(self._initial_window_geometry)
         self.bind_shortcuts()
 
         if not self.engine.process:
             self.analyze_game_button.config(state=tk.DISABLED)
             self.threat_button.config(state=tk.DISABLED)
+            self.quick_analysis_button.config(state=tk.DISABLED)
             self.skill_scale.state(["disabled"])
             self.multipv_spinbox.state(["disabled"])
             self.time_spinbox.state(["disabled"])

@@ -1,6 +1,7 @@
 import io
 import random
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import Toplevel, filedialog, messagebox, simpledialog, ttk
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
@@ -18,6 +19,7 @@ from .import_utils import (
     looks_like_fen,
     looks_like_pgn,
 )
+from .navigation_utils import graph_x_to_ply, matches_move_query
 from .openings import apply_opening_headers
 from .reporting import build_report_text
 
@@ -28,21 +30,62 @@ class GameFlowMixin:
 
     def prompt_color_and_start(self) -> None:
         win = Toplevel(self.root)
-        win.title("Новая игра")
+        win.title("Добро пожаловать в ChessAI")
         win.transient(self.root)
         win.grab_set()
-        ttk.Label(win, text="Выберите режим:").pack(padx=12, pady=(12, 6))
+        win.resizable(False, False)
 
-        choice = tk.StringVar(value="random")
-        for text, value in (("Белыми", "white"), ("Черными", "black"), ("Случайно", "random"), ("Только анализ", "analysis")):
-            ttk.Radiobutton(win, text=text, value=value, variable=choice).pack(anchor="w", padx=12)
+        content = ttk.Frame(win, padding=22)
+        content.pack(fill=tk.BOTH, expand=True)
+        self._welcome_font = tkfont.nametofont("TkDefaultFont").copy()
+        self._welcome_font.configure(size=17, weight="bold")
+        ttk.Label(content, text="С чего начнем?", font=self._welcome_font).pack(anchor=tk.W)
+        ttk.Label(
+            content,
+            text="Можно сразу разбирать позицию или сыграть тренировочную партию со Stockfish.",
+            foreground=self.COLORS["muted"],
+            wraplength=430,
+        ).pack(anchor=tk.W, pady=(4, 16))
 
-        buttons = ttk.Frame(win)
-        buttons.pack(fill=tk.X, pady=12, padx=12)
-        ttk.Button(buttons, text="OK", command=lambda: self._apply_start_choice(choice.get(), win)).pack(side=tk.RIGHT)
-        ttk.Button(buttons, text="Отмена", command=win.destroy).pack(side=tk.RIGHT, padx=(0, 6))
+        choice = tk.StringVar(value="analysis")
+        options = (
+            ("Анализ позиции", "analysis", "Загрузите PGN, FEN или расставьте ходы на доске"),
+            ("Играть белыми", "white", "Stockfish будет играть черными"),
+            ("Играть черными", "black", "Stockfish сделает первый ход"),
+            ("Случайный цвет", "random", "Цвет будет выбран автоматически"),
+        )
+        for title, value, description in options:
+            row = ttk.Frame(content)
+            row.pack(fill=tk.X, pady=4)
+            radio = ttk.Radiobutton(row, text=title, value=value, variable=choice)
+            radio.pack(anchor=tk.W)
+            if value != "analysis" and (not self.engine or not self.engine.process):
+                radio.state(["disabled"])
+                description += " · Stockfish недоступен"
+            ttk.Label(row, text=description, style="Muted.TLabel").pack(anchor=tk.W, padx=(24, 0))
+
+        buttons = ttk.Frame(content)
+        buttons.pack(fill=tk.X, pady=(18, 0))
+        continue_button = ttk.Button(
+            buttons,
+            text="Продолжить",
+            command=lambda: self._apply_start_choice(choice.get(), win),
+        )
+        if self.is_macos:
+            continue_button.state(["alternate"])
+        continue_button.pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Закрыть", command=win.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        win.bind("<Return>", lambda event: self._apply_start_choice(choice.get(), win))
+        win.bind("<Escape>", lambda event: win.destroy())
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - win.winfo_width()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - win.winfo_height()) // 2)
+        win.geometry(f"+{x}+{y}")
 
     def _apply_start_choice(self, value: str, dialog: Toplevel) -> None:
+        if value != "analysis" and (not self.engine or not self.engine.process):
+            messagebox.showwarning("Stockfish недоступен", "Для игры с движком установите Stockfish или укажите STOCKFISH_PATH.", parent=dialog)
+            return
         dialog.destroy()
         if value == "analysis":
             self.reset_to_new_game(chess.pgn.Game())
@@ -51,15 +94,19 @@ class GameFlowMixin:
             return
 
         color = random.choice([chess.WHITE, chess.BLACK]) if value == "random" else (chess.WHITE if value == "white" else chess.BLACK)
-        self.user_color = color
         game = chess.pgn.Game()
         game.headers["Event"] = "Игра против движка"
         game.headers["White"] = "Человек" if color == chess.WHITE else "Stockfish"
         game.headers["Black"] = "Stockfish" if color == chess.BLACK else "Человек"
-        self.reset_to_new_game(game, preserve_orientation=True)
+        self.reset_to_new_game(
+            game,
+            preserve_orientation=True,
+            game_mode="play_engine",
+            user_color=color,
+        )
         self.board_orientation_white_pov = self.user_color == chess.WHITE
         self.update_board_display()
-        self.game_mode = "play_engine"
+        self.refresh_status_bar()
         if self.board_state.turn != self.user_color:
             expected_fen = self.board_state.fen()
             self.root.after(500, lambda fen=expected_fen: self.make_engine_move(expected_fen=fen))
@@ -67,7 +114,13 @@ class GameFlowMixin:
     def refresh_opening_metadata(self):
         if not self.current_game_node:
             return None
-        return apply_opening_headers(self.current_game_node.game())
+        game = self.current_game_node.game()
+        signature = (id(game), self.game_tree_revision)
+        if signature == self._opening_cache_signature:
+            return self._opening_cache
+        self._opening_cache = apply_opening_headers(game)
+        self._opening_cache_signature = signature
+        return self._opening_cache
 
     def update_info_panel(self) -> None:
         self.clear_evaluation_display()
@@ -117,12 +170,13 @@ class GameFlowMixin:
                 self.update_coach_hint_display(self.get_training_hint_text())
         else:
             self.game_info_label.config(text="Партия не загружена")
-            self.moves_listbox.delete(0, tk.END)
+            self._show_moves_empty_state()
             self.update_eval_bar(None, None)
             self.update_evaluation_graph()
             self.refresh_report_panel()
             self.populate_variation_tree()
             self.update_coach_hint_display("")
+        self.refresh_status_bar()
 
     def _get_active_line_nodes(self) -> List[chess.pgn.GameNode]:
         if not self.current_game_node:
@@ -142,19 +196,30 @@ class GameFlowMixin:
             line_nodes.append(tail)
         return line_nodes
 
-    def populate_moves_listbox(self) -> None:
-        self.moves_listbox.delete(0, tk.END)
-        self.move_nodes_in_listbox = []
-
+    def populate_moves_listbox(self, force: bool = False) -> None:
         if not self.current_game_node:
+            self._show_moves_empty_state()
+            self._moves_list_signature = None
             return
 
         game_root_node = self.current_game_node.game()
         board_for_san = game_root_node.board()
         line_nodes = self._get_active_line_nodes()
+        query = self.move_search_var.get().strip().casefold() if hasattr(self, "move_search_var") else ""
+        signature = (id(game_root_node), tuple(id(node) for node in line_nodes), query)
+        if not force and signature == self._moves_list_signature:
+            self._sync_moves_tree_selection()
+            return
 
-        self.moves_listbox.insert(tk.END, "--- Начало ---")
-        self.move_nodes_in_listbox.append(game_root_node)
+        move_items = self.moves_tree.get_children()
+        if move_items:
+            self.moves_tree.delete(*move_items)
+        self.move_tree_nodes = {}
+        total_items = len(line_nodes) + 1
+
+        if matches_move_query("--- Начало ---", query):
+            item_id = self.moves_tree.insert("", tk.END, text="Начальная позиция")
+            self.move_tree_nodes[item_id] = game_root_node
 
         for node in line_nodes:
             san_move = board_for_san.san(node.move)
@@ -172,29 +237,73 @@ class GameFlowMixin:
                 comment_text = node.comment.replace("\n", " ")
                 display_text += f" ({comment_text[:40]})" if len(comment_text) > 40 else f" ({comment_text})"
 
-            self.moves_listbox.insert(tk.END, display_text)
-            self.move_nodes_in_listbox.append(node)
+            if matches_move_query(display_text, query):
+                item_id = self.moves_tree.insert("", tk.END, text=display_text)
+                self.move_tree_nodes[item_id] = node
             board_for_san.push(node.move)
 
-        try:
-            idx_to_select = self.move_nodes_in_listbox.index(self.current_game_node)
-            self.moves_listbox.selection_clear(0, tk.END)
-            self.moves_listbox.selection_set(idx_to_select)
-            self.moves_listbox.see(idx_to_select)
-        except (ValueError, tk.TclError):
-            pass
+        if hasattr(self, "move_search_hint"):
+            if query:
+                self.move_search_hint.config(text=f"Найдено: {len(self.move_tree_nodes)} из {total_items}")
+            else:
+                self.move_search_hint.config(text="Поиск по ходу, номеру или комментарию")
 
-    def update_evaluation_graph(self) -> None:
+        self._moves_list_signature = signature
+        self._sync_moves_tree_selection()
+
+    def _show_moves_empty_state(self) -> None:
+        move_items = self.moves_tree.get_children()
+        if move_items:
+            self.moves_tree.delete(*move_items)
+        self.move_tree_nodes = {}
+        self.moves_tree.insert("", tk.END, text="Откройте PGN, FEN или вставьте позицию")
+
+    def _sync_moves_tree_selection(self) -> None:
+        for item_id, node in self.move_tree_nodes.items():
+            if node is self.current_game_node:
+                self.moves_tree.selection_set(item_id)
+                self.moves_tree.focus(item_id)
+                self.moves_tree.see(item_id)
+                return
+        self.moves_tree.selection_remove(*self.moves_tree.selection())
+
+    def update_evaluation_graph(self, force: bool = False) -> None:
+        if (
+            not force
+            and hasattr(self, "notebook")
+            and hasattr(self, "graph_tab")
+            and self.notebook.select() != str(self.graph_tab)
+        ):
+            self._graph_dirty = True
+            return
+
+        self._graph_dirty = False
         self.ax.clear()
-        self.ax.grid(True)
-        self.ax.set_title("Оценка партии")
-        self.ax.set_xlabel("Номер полухода")
-        self.ax.set_ylabel("Оценка (сантипешки)")
+        self.ax.set_facecolor(self.COLORS["surface"])
+        self.ax.grid(True, color=self.COLORS["border"], alpha=0.5, linewidth=0.7)
+        self.ax.set_title("Оценка партии", color=self.COLORS["text"], pad=12)
+        self.ax.set_xlabel("Номер полухода", color=self.COLORS["muted"])
+        self.ax.set_ylabel("Оценка (сантипешки)", color=self.COLORS["muted"])
+        self.ax.tick_params(colors=self.COLORS["muted"])
+        for spine in self.ax.spines.values():
+            spine.set_color(self.COLORS["border"])
 
         if self.evaluation_history:
             plies = range(1, len(self.evaluation_history) + 1)
-            self.ax.plot(plies, self.evaluation_history, marker="o", linestyle="-")
-            self.ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
+            self.ax.plot(
+                plies,
+                self.evaluation_history,
+                color=self.COLORS["accent"],
+                marker="o",
+                markerfacecolor=self.COLORS["surface"],
+                markeredgecolor=self.COLORS["accent"],
+                markersize=4,
+                linewidth=1.8,
+            )
+            self.ax.axhline(0, color=self.COLORS["muted"], linewidth=0.8, linestyle="--")
+            current_ply = self.current_game_node.ply() if self.current_game_node else 0
+            if 1 <= current_ply <= len(self.evaluation_history):
+                self.ax.axvline(current_ply, color=self.COLORS["selection"], linewidth=1.2, alpha=0.9)
 
             max_abs_eval = max(abs(evaluation) for evaluation in self.evaluation_history)
             display_max = min(max_abs_eval + 100, 1000)
@@ -207,10 +316,28 @@ class GameFlowMixin:
                 horizontalalignment="center",
                 verticalalignment="center",
                 transform=self.ax.transAxes,
+                color=self.COLORS["muted"],
             )
 
         self.fig.tight_layout()
         self.graph_canvas.draw()
+
+    def on_notebook_tab_changed(self, event: Optional[tk.Event] = None) -> None:
+        if self.notebook.select() == str(self.graph_tab) and getattr(self, "_graph_dirty", True):
+            self.update_evaluation_graph(force=True)
+
+    def on_graph_click(self, event) -> None:
+        if event.xdata is None or not self.current_game_node or not self.evaluation_history:
+            return
+        line_nodes = self._get_active_line_nodes()
+        target_ply = graph_x_to_ply(event.xdata, len(line_nodes))
+        if target_ply is None:
+            return
+        target_node = line_nodes[target_ply - 1]
+        if target_node != self.current_game_node:
+            self._set_active_node(target_node)
+            self.notebook.select(self.graph_tab)
+            self.set_status_message(f"Переход к полуходу {target_ply}", clear_after_ms=2200)
 
     def load_pgn(self) -> None:
         filepath = filedialog.askopenfilename(title="Открыть PGN", filetypes=(("PGN files", "*.pgn"), ("All files", "*.*")))
@@ -412,16 +539,30 @@ class GameFlowMixin:
         fen = self.board_state.fen()
         self.root.clipboard_clear()
         self.root.clipboard_append(fen)
-        messagebox.showinfo("FEN скопирован", "Текущий FEN скопирован в буфер обмена.")
+        self.set_status_message("FEN скопирован в буфер обмена", clear_after_ms=3000)
 
-    def reset_to_new_game(self, game_node: chess.pgn.GameNode, preserve_orientation: bool = True) -> None:
+    def export_pgn_to_clipboard(self) -> None:
+        if not self.current_game_node:
+            messagebox.showwarning("Нет партии", "Сначала загрузите или начните партию.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(str(self.current_game_node.game()))
+        self.set_status_message("PGN скопирован в буфер обмена", clear_after_ms=3000)
+
+    def reset_to_new_game(
+        self,
+        game_node: chess.pgn.GameNode,
+        preserve_orientation: bool = True,
+        game_mode: str = "analysis",
+        user_color: Optional[bool] = None,
+    ) -> None:
         self.current_game_node = game_node
         self.board_state = game_node.board()
         apply_opening_headers(self.current_game_node.game())
         if not preserve_orientation:
             self.board_orientation_white_pov = True
-        self.game_mode = "analysis"
-        self.user_color = None
+        self.game_mode = game_mode
+        self.user_color = user_color
         self.selected_square_for_move = None
         self.is_dragging = False
         self.drag_from_square = None
@@ -439,6 +580,12 @@ class GameFlowMixin:
         self.training_index = -1
         self.training_score = 0
         self.training_restore_state = None
+        self.game_tree_revision += 1
+        self._moves_list_signature = None
+        self._rendered_variation_signature = None
+        self._rendered_report_signature = None
+        self._opening_cache_signature = None
+        self._opening_cache = None
         self.update_board_display()
         self.update_info_panel()
         self.update_navigation_buttons()
@@ -451,10 +598,10 @@ class GameFlowMixin:
         return max(200, min(self.get_engine_movetime_ms(), DEFAULT_BATCH_MOVETIME_MS))
 
     def check_game_status(self) -> None:
-        status_text, color = "", "blue"
+        status_text, color = "", self.COLORS["selection"]
         if self.board_state.is_checkmate():
             winner = "Белые" if self.board_state.turn == chess.BLACK else "Черные"
-            status_text, color = f"МАТ! {winner} победили.", "red"
+            status_text, color = f"МАТ! {winner} победили.", self.COLORS["danger"]
         elif self.board_state.is_stalemate():
             status_text = "ПАТ! Ничья."
         elif self.board_state.is_insufficient_material():
